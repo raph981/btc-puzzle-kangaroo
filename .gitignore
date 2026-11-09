@@ -1,0 +1,4 @@
+kangaroo
+*.o
+__pycache__/
+.claude/

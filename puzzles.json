@@ -1,0 +1,13 @@
+[
+  {"bits": 20, "address": "1HsMJxNiV7TLxmoF6uJNkydxPFDog4NQum", "pubkey": "033c4a45cbd643ff97d77f41ea37e843648d50fd894b864b0d52febc62f6454f7c"},
+  {"bits": 25, "address": "15JhYXn6Mx3oF4Y7PcTAv2wVVAuCFFQNiP", "pubkey": "03057fbea3a2623382628dde556b2a0698e32428d3cd225f3bd034dca82dd7455a"},
+  {"bits": 30, "address": "1LHtnpd8nU5VHEMkG2TMYYNUjjLc992bps", "pubkey": "030d282cf2ff536d2c42f105d0b8588821a915dc3f9a05bd98bb23af67a2e92a5b"},
+  {"bits": 35, "address": "1PWCx5fovoEaoBowAvF5k91m2Xat9bMgwb", "pubkey": "02f6a8148a62320e149cb15c544fe8a25ab483a0095d2280d03b8a00a7feada13d"},
+  {"bits": 40, "address": "1EeAxcprB2PpCnr34VfZdFrkUWuxyiNEFv", "pubkey": "03a2efa402fd5268400c77c20e574ba86409ededee7c4020e4b9f0edbee53de0d4"},
+  {"bits": 45, "address": "1NtiLNGegHWE3Mp9g2JPkgx6wUg4TW7bbk", "pubkey": "026ecabd2d22fdb737be21975ce9a694e108eb94f3649c586cc7461c8abf5da71a"},
+  {"bits": 50, "address": "1MEzite4ReNuWaL5Ds17ePKt2dCxWEofwk", "pubkey": "03f46f41027bbf44fafd6b059091b900dad41e6845b2241dc3254c7cdd3c5a16c6"},
+  {"bits": 55, "address": "1LzhS3k3e9Ub8i2W1V8xQFdB8n2MYCHPCa", "pubkey": "0385a30d8413af4f8f9e6312400f2d194fe14f02e719b24c3f83bf1fd233a8f963"},
+  {"bits": 60, "address": "1Kn5h2qpgw9mWE5jKpk8PP4qvvJ1QVy8su", "pubkey": "0348e843dc5b1bd246e6309b4924b81543d02b16c8083df973a89ce2c7eb89a10d"},
+  {"bits": 65, "address": "18ZMbwUFLMHoZBbfpCjUJQTCMCbktshgpe", "pubkey": "0230210c23b1a047bc9bdbb13448e67deddc108946de6de639bcc75d47c0216b1b"},
+  {"bits": 70, "address": "19YZECXj3SxEZMoUeJ1yiPsw8xANe7M7QR", "pubkey": "0290e6900a58d33393bc1097b5aed31f2e4e7cbd3e5466af958665bc0121248483"}
+]

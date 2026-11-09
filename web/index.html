@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kangaroo · Bitcoin puzzle solver</title>
+<style>
+  :root {
+    --bg: #0d1014; --panel: #151a21; --panel2: #1b222b; --line: #283240;
+    --text: #e6ebf2; --muted: #8b98a9; --accent: #f7931a; --accent-ink: #1a1206;
+    --good: #3ecf8e; --bad: #f2555a; --info: #5aa9ff;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 22px; }
+  .logo { width: 40px; height: 40px; border-radius: 11px; background: var(--accent); color: var(--accent-ink);
+          display: grid; place-items: center; font-weight: 800; font-size: 22px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -.01em; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+  .pill { margin-left: auto; padding: 5px 12px; border-radius: 999px; font-size: 13px; font-weight: 600;
+          border: 1px solid var(--line); color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .pill i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .pill.running { color: var(--info); } .pill.running i { animation: pulse 1.1s infinite; }
+  .pill.found { color: var(--good); } .pill.error { color: var(--bad); }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .grid { display: grid; grid-template-columns: 380px 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 880px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 16px; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; }
+  .chip { font: 600 13px var(--mono); padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line);
+          background: var(--panel2); color: var(--text); cursor: pointer; }
+  .chip:hover { border-color: var(--muted); }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; margin: 14px 0 0; font-size: 13px; }
+  dt { color: var(--muted); } dd { margin: 0; font-family: var(--mono); overflow-wrap: anywhere; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  input[type=text], input[type=number] { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+          border-radius: 8px; padding: 8px 10px; font: 13px var(--mono); }
+  input:focus-visible, button:focus-visible, .chip:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+  .seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+  .seg button { border: 0; background: none; color: var(--muted); padding: 8px; border-radius: 7px; font: 600 14px inherit; cursor: pointer; }
+  .seg button.on { background: var(--panel2); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
+  .seg button:disabled { opacity: .45; cursor: not-allowed; }
+  .hint { font-size: 12.5px; color: var(--muted); margin: 8px 0 0; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  input[type=range] { flex: 1; accent-color: var(--accent); }
+  .row output { font: 600 14px var(--mono); min-width: 2ch; text-align: right; }
+  details { margin-top: 12px; } summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .go { width: 100%; padding: 13px; border: 0; border-radius: 11px; font: 700 16px inherit; cursor: pointer;
+        background: var(--accent); color: var(--accent-ink); }
+  .go.stop { background: none; color: var(--bad); box-shadow: inset 0 0 0 1.5px var(--bad); }
+  .go:disabled { opacity: .5; cursor: wait; }
+  .err { color: var(--bad); font-size: 13px; margin: 10px 0 0; min-height: 1em; }
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
+  @media (max-width: 560px) { .tiles { grid-template-columns: 1fr 1fr; } }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+  .tile span { display: block; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
+  .tile b { display: block; font: 600 22px var(--mono); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .tile small { color: var(--muted); font-size: 12px; }
+  .bar { height: 10px; background: var(--bg); border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+  .bar div { height: 100%; width: 0; background: var(--accent); transition: width .5s; }
+  .barlabel { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-top: 7px; gap: 12px; }
+  canvas { width: 100%; height: 170px; display: block; }
+  .result { border-color: var(--good); display: none; }
+  .result.show { display: block; }
+  .key { font: 700 clamp(18px, 3.4vw, 28px) var(--mono); color: var(--good); overflow-wrap: anywhere; margin: 2px 0 10px; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+  .badge.ok { background: color-mix(in srgb, var(--good) 20%, transparent); color: var(--good); }
+  .badge.no { background: color-mix(in srgb, var(--bad) 20%, transparent); color: var(--bad); }
+  .copy { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 11px; cursor: pointer; font: 13px inherit; }
+  pre { margin: 0; font: 12.5px/1.6 var(--mono); color: var(--muted); max-height: 150px; overflow: auto; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">₿</div>
+    <div>
+      <h1>Kangaroo</h1>
+      <p>Pollard's kangaroo solver for the Bitcoin puzzle keys</p>
+    </div>
+    <div class="pill" id="pill"><i></i><span id="pilltext">idle</span></div>
+  </header>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <h2>Target</h2>
+        <div class="chips" id="chips"></div>
+        <dl id="target">
+          <dt>Address</dt><dd id="t-addr">–</dd>
+          <dt>Public key</dt><dd id="t-pub">–</dd>
+          <dt>Key range</dt><dd id="t-range">–</dd>
+          <dt>Expected work</dt><dd id="t-work">–</dd>
+        </dl>
+        <div id="custom" hidden>
+          <label for="c-pub">Public key (hex, compressed or uncompressed)</label>
+          <input type="text" id="c-pub" spellcheck="false" placeholder="02… / 03… / 04…">
+          <div class="two">
+            <div><label for="c-start">Range start (hex)</label><input type="text" id="c-start" spellcheck="false" placeholder="200000000000000000"></div>
+            <div><label for="c-end">Range end (hex)</label><input type="text" id="c-end" spellcheck="false" placeholder="3fffffffffffffffff"></div>
+          </div>
+          <label for="c-addr">Expected address (optional, used to verify the result)</label>
+          <input type="text" id="c-addr" spellcheck="false">
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Engine</h2>
+        <div class="seg" role="group" aria-label="Backend">
+          <button id="b-cpu" class="on">CPU</button>
+          <button id="b-gpu">NVIDIA GPU</button>
+        </div>
+        <p class="hint" id="gpuhint"></p>
+        <div id="cpuopts">
+          <label for="threads">CPU threads</label>
+          <div class="row"><input type="range" id="threads" min="1" max="4" value="4"><output id="threads-out">4</output></div>
+        </div>
+        <details>
+          <summary>Advanced</summary>
+          <div class="two">
+            <div><label for="kang">Kangaroos</label><input type="number" id="kang" min="2" placeholder="auto"></div>
+            <div><label for="dp">DP bits</label><input type="number" id="dp" min="0" max="60" placeholder="auto"></div>
+          </div>
+        </details>
+      </div>
+
+      <button class="go" id="go">Start search</button>
+      <p class="err" id="err" role="alert"></p>
+    </div>
+
+    <div>
+      <div class="card result" id="result">
+        <h2>Private key found</h2>
+        <div class="key" id="r-key"></div>
+        <dl style="margin-top:0">
+          <dt>Address</dt><dd><span id="r-addr"></span> <span class="badge" id="r-badge"></span></dd>
+          <dt>Public key</dt><dd id="r-pub"></dd>
+          <dt>Work</dt><dd id="r-work"></dd>
+        </dl>
+        <p style="margin:12px 0 0"><button class="copy" id="copy">Copy key</button></p>
+      </div>
+
+      <div class="tiles">
+        <div class="tile"><span>Speed</span><b id="s-rate">–</b><small>jumps per second</small></div>
+        <div class="tile"><span>Jumps done</span><b id="s-ops">–</b><small id="s-ops2">&nbsp;</small></div>
+        <div class="tile"><span>Elapsed</span><b id="s-time">–</b><small id="s-eta">&nbsp;</small></div>
+        <div class="tile"><span>Kangaroos</span><b id="s-kang">–</b><small id="s-backend">&nbsp;</small></div>
+        <div class="tile"><span>Distinguished points</span><b id="s-dps">–</b><small id="s-dpbits">&nbsp;</small></div>
+        <div class="tile"><span>Herd restarts</span><b id="s-resets">–</b><small>merged walks replaced</small></div>
+      </div>
+
+      <div class="card">
+        <h2>Progress against the expected work</h2>
+        <div class="bar"><div id="bar"></div></div>
+        <div class="barlabel"><span id="p-pct">–</span><span>The search is probabilistic: it usually ends between 50% and 200%.</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Speed over time</h2>
+        <canvas id="chart"></canvas>
+      </div>
+
+      <div class="card">
+        <h2>Log</h2>
+        <pre id="log">ready</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let cfg = null, sel = null, backend = 'cpu', state = {status: 'idle'}, busy = false;
+
+const si = (n, d = 2) => {
+  if (n == null || !isFinite(n)) return '–';
+  const u = ['', 'k', 'M', 'G', 'T', 'P'];
+  let i = 0; while (Math.abs(n) >= 1000 && i < u.length - 1) { n /= 1000; i++; }
+  return (i ? n.toFixed(d) : Math.round(n)) + (i ? ' ' + u[i] : '');
+};
+const dur = s => {
+  if (s == null || !isFinite(s)) return '–';
+  s = Math.round(s);
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+  return h ? `${h}h ${String(m).padStart(2, '0')}m` : m ? `${m}m ${String(x).padStart(2, '0')}s` : `${x}s`;
+};
+const expectedFor = bits => 2 * Math.sqrt(2 ** (bits - 1));
+
+function renderTarget() {
+  for (const c of $('chips').children) c.classList.toggle('on', c.dataset.k === String(sel));
+  const custom = sel === 'custom';
+  $('custom').hidden = !custom; $('target').hidden = custom;
+  if (custom) return;
+  const p = cfg.puzzles.find(p => p.bits === sel);
+  $('t-addr').textContent = p.address;
+  $('t-pub').textContent = p.pubkey;
+  $('t-range').textContent = `2^${p.bits - 1} … 2^${p.bits} − 1`;
+  $('t-work').textContent = `≈ ${si(expectedFor(p.bits))} jumps (2^${(p.bits - 1) / 2 + 1})`;
+}
+
+function renderEngine() {
+  $('b-cpu').classList.toggle('on', backend === 'cpu');
+  $('b-gpu').classList.toggle('on', backend === 'gpu');
+  $('cpuopts').hidden = backend !== 'cpu';
+}
+
+async function init() {
+  cfg = await (await fetch('/api/config')).json();
+  for (const p of cfg.puzzles) {
+    const b = document.createElement('button');
+    b.className = 'chip'; b.textContent = '#' + p.bits; b.dataset.k = p.bits;
+    b.onclick = () => { sel = p.bits; renderTarget(); };
+    $('chips').append(b);
+  }
+  const c = document.createElement('button');
+  c.className = 'chip'; c.textContent = 'custom'; c.dataset.k = 'custom';
+  c.onclick = () => { sel = 'custom'; renderTarget(); };
+  $('chips').append(c);
+  sel = 40; renderTarget();
+
+  const info = cfg.info, n = info.threads || 1;
+  $('threads').max = n; $('threads').value = n; $('threads-out').textContent = n;
+  const gpuOk = info.cuda_build && info.devices.length > 0;
+  $('b-gpu').disabled = !gpuOk;
+  $('gpuhint').textContent = gpuOk ? 'GPU: ' + info.devices[0]
+    : info.cuda_build ? 'CUDA build, but no NVIDIA device was detected.'
+    : 'GPU disabled: the solver was built without CUDA. Run "make gpu" on a machine with the CUDA toolkit.';
+  poll(); setInterval(poll, 500);
+}
+
+$('threads').oninput = e => $('threads-out').textContent = e.target.value;
+$('b-cpu').onclick = () => { backend = 'cpu'; renderEngine(); };
+$('b-gpu').onclick = () => { backend = 'gpu'; renderEngine(); };
+
+async function post(url, body) {
+  const r = await fetch(url, {method: 'POST', body: JSON.stringify(body || {}),
+    headers: {'Content-Type': 'application/json', 'X-Requested-With': 'kangaroo-ui'}});
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || 'request failed');
+}
+
+$('go').onclick = async () => {
+  $('err').textContent = ''; busy = true; $('go').disabled = true;
+  try {
+    if (state.status === 'running') await post('/api/stop');
+    else {
+      const req = {backend, threads: +$('threads').value};
+      if ($('kang').value) req.kangaroos = +$('kang').value;
+      if ($('dp').value !== '') req.dp = +$('dp').value;
+      if (sel === 'custom') req.custom = {pubkey: $('c-pub').value.trim(), start: $('c-start').value.trim(),
+                                          end: $('c-end').value.trim(), address: $('c-addr').value.trim()};
+      else req.puzzle = sel;
+      await post('/api/start', req);
+    }
+    await poll();
+  } catch (e) { $('err').textContent = e.message; }
+  busy = false; $('go').disabled = false;
+};
+
+$('copy').onclick = () => navigator.clipboard.writeText($('r-key').textContent)
+  .then(() => { $('copy').textContent = 'Copied'; setTimeout(() => $('copy').textContent = 'Copy key', 1200); });
+
+async function poll() {
+  try { state = await (await fetch('/api/state')).json(); } catch (e) { return; }
+  render();
+}
+
+function render() {
+  const s = state, run = s.status === 'running';
+  $('pill').className = 'pill ' + s.status;
+  $('pilltext').textContent = {idle: 'idle', running: 'searching', found: 'key found', stopped: 'stopped', error: 'error'}[s.status]
+    + (s.target && s.status !== 'idle' ? ' · ' + s.target.label : '');
+  $('go').textContent = run ? 'Stop search' : 'Start search';
+  $('go').classList.toggle('stop', run);
+  if (s.status === 'error' && !busy) $('err').textContent = s.error || '';
+
+  const st = s.start, p = s.progress, res = s.result;
+  const ops = res ? res.ops : p ? p.ops : null, exp = st ? st.expected_ops : null;
+  const elapsed = res ? res.elapsed : p ? p.elapsed : null;
+  const rate = p ? p.rate : (res && res.elapsed > 0 ? res.ops / res.elapsed : null);
+  $('s-rate').textContent = si(rate);
+  $('s-ops').textContent = si(ops);
+  $('s-ops2').textContent = ops ? '2^' + Math.log2(ops).toFixed(2) : ' ';
+  $('s-time').textContent = dur(elapsed);
+  $('s-kang').textContent = st ? si(st.kangaroos, 1) : '–';
+  $('s-backend').textContent = st ? st.backend : ' ';
+  $('s-dps').textContent = p ? si(p.dps, 1) : '–';
+  $('s-dpbits').textContent = st ? `1 in 2^${st.dp_bits} points` : ' ';
+  $('s-resets').textContent = p ? si(p.resets, 1) : '–';
+  let eta = ' ';
+  if (run && rate && exp) eta = ops < exp ? 'about ' + dur((exp - ops) / rate) + ' to the average' : 'past the average: any moment now';
+  $('s-eta').textContent = eta;
+  const pct = ops != null && exp ? 100 * ops / exp : 0;
+  $('bar').style.width = Math.min(100, pct) + '%';
+  $('bar').style.background = res ? 'var(--good)' : 'var(--accent)';
+  $('p-pct').textContent = exp ? `${pct.toFixed(1)}% of ≈ ${si(exp)} jumps` : '–';
+
+  $('result').classList.toggle('show', !!res);
+  if (res) {
+    $('r-key').textContent = res.key;
+    $('r-addr').textContent = res.address;
+    $('r-pub').textContent = res.pubkey;
+    $('r-work').textContent = `${si(res.ops)} jumps in ${dur(res.elapsed)}`;
+    const b = $('r-badge');
+    b.hidden = !res.address_checked;
+    b.className = 'badge ' + (res.address_match ? 'ok' : 'no');
+    b.textContent = res.address_match ? '✓ matches the puzzle address' : '✗ does not match';
+  }
+  const log = (s.log || []).join('\n') || 'ready';
+  if ($('log').textContent !== log) { $('log').textContent = log; $('log').scrollTop = 1e9; }
+  drawChart(s.history || []);
+}
+
+function drawChart(h) {
+  const c = $('chart'), dpr = window.devicePixelRatio || 1, w = c.clientWidth, ht = c.clientHeight;
+  if (c.width !== w * dpr) { c.width = w * dpr; c.height = ht * dpr; }
+  const g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, ht);
+  const css = getComputedStyle(document.documentElement);
+  const L = 52, R = 8, T = 8, B = 22;
+  g.font = '11px system-ui'; g.fillStyle = css.getPropertyValue('--muted'); g.strokeStyle = css.getPropertyValue('--line');
+  if (h.length < 2) { g.fillText('waiting for data…', L, ht / 2); return; }
+  const max = Math.max(...h.map(p => p[1])) * 1.15 || 1, t0 = h[0][0], t1 = h[h.length - 1][0];
+  const X = t => L + (w - L - R) * (t - t0) / Math.max(1e-9, t1 - t0), Y = v => T + (ht - T - B) * (1 - v / max);
+  g.lineWidth = 1;
+  for (let i = 0; i <= 3; i++) {
+    const v = max * i / 3, y = Y(v);
+    g.beginPath(); g.moveTo(L, y); g.lineTo(w - R, y); g.stroke();
+    g.textAlign = 'right'; g.fillText(si(v, 1), L - 6, y + 4);
+  }
+  g.textAlign = 'left'; g.fillText(dur(t0), L, ht - 5);
+  g.textAlign = 'right'; g.fillText(dur(t1), w - R, ht - 5);
+  const accent = css.getPropertyValue('--accent');
+  g.beginPath();
+  h.forEach((p, i) => i ? g.lineTo(X(p[0]), Y(p[1])) : g.moveTo(X(p[0]), Y(p[1])));
+  g.strokeStyle = accent; g.lineWidth = 2; g.lineJoin = 'round'; g.stroke();
+  g.lineTo(X(t1), Y(0)); g.lineTo(X(t0), Y(0)); g.closePath();
+  g.globalAlpha = .12; g.fillStyle = accent; g.fill(); g.globalAlpha = 1;
+}
+
+init();
+</script>
+</body>
+</html>
