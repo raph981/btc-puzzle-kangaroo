@@ -163,11 +163,53 @@ static Pt parse_pubkey(const std::string &in) {
 static std::string pubkey_hex(const Pt &p) {
     return std::string((p.y.v[0] & 1) ? "03" : "02") + fe_hex(p.x);
 }
+static void serialize_pub(const Pt &p, uint8_t pub[65], bool compressed, int &len) {
+    if (compressed) {
+        pub[0] = (p.y.v[0] & 1) ? 3 : 2;
+        for (int i = 0; i < 32; i++) pub[1 + i] = (uint8_t)(p.x.v[3 - i / 8] >> (56 - 8 * (i % 8)));
+        len = 33;
+    } else {
+        pub[0] = 4;
+        for (int i = 0; i < 32; i++) pub[1 + i] = (uint8_t)(p.x.v[3 - i / 8] >> (56 - 8 * (i % 8)));
+        for (int i = 0; i < 32; i++) pub[33 + i] = (uint8_t)(p.y.v[3 - i / 8] >> (56 - 8 * (i % 8)));
+        len = 65;
+    }
+}
 static std::string address_of(const Pt &p) {
-    uint8_t pub[33];
-    pub[0] = (p.y.v[0] & 1) ? 3 : 2;
-    for (int i = 0; i < 32; i++) pub[1 + i] = (uint8_t)(p.x.v[3 - i / 8] >> (56 - 8 * (i % 8)));
-    return hashes::p2pkh(pub, 33);
+    uint8_t pub[65]; int len;
+    serialize_pub(p, pub, true, len);
+    return hashes::p2pkh(pub, len);
+}
+// hash160 = RIPEMD160(SHA256(pubkey))
+static void hash160_of(const Pt &p, bool compressed, uint8_t out[20]) {
+    uint8_t pub[65], s[32]; int len;
+    serialize_pub(p, pub, compressed, len);
+    hashes::sha256(pub, len, s);
+    hashes::ripemd160(s, 32, out);
+}
+// Decode a Base58Check P2PKH address to its 20-byte hash160, verifying the
+// version byte and checksum. Returns false if the address is malformed.
+static bool decode_address(const std::string &addr, uint8_t out[20]) {
+    static const char *A = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    uint8_t num[32] = {0};
+    size_t nlen = 0, zeros = 0;
+    for (char c : addr) if (c == '1') zeros++; else break;
+    for (char c : addr) {
+        const char *q = strchr(A, c);
+        if (!q || !c) return false;
+        int carry = (int)(q - A);
+        for (size_t i = 0; i < nlen; i++) { carry += num[i] * 58; num[i] = carry & 0xff; carry >>= 8; }
+        while (carry) { if (nlen >= sizeof num) return false; num[nlen++] = carry & 0xff; carry >>= 8; }
+    }
+    std::vector<uint8_t> d(zeros, 0);
+    for (size_t i = 0; i < nlen; i++) d.push_back(num[nlen - 1 - i]);
+    if (d.size() != 25 || d[0] != 0x00) return false;   // 0x00 = mainnet P2PKH
+    uint8_t h1[32], h2[32];
+    hashes::sha256(d.data(), 21, h1);
+    hashes::sha256(h1, 32, h2);
+    if (memcmp(h2, d.data() + 21, 4) != 0) return false;
+    memcpy(out, d.data() + 1, 20);
+    return true;
 }
 
 // ------------------------------------------------------------------- solver
@@ -241,6 +283,82 @@ static void batch_add_const(const std::vector<u32> &ids, const Pt &T) {
         fe_mul(y3, lam, t);
         fe_sub(y3, y3, g_py[i]);
         g_px[i] = x3; g_py[i] = y3;
+    }
+}
+
+// ------------------------------------------- brute force (public key unknown)
+//
+// For the puzzles whose public key has never appeared on-chain the kangaroo
+// method cannot be used: all we have is the address. The only option is to walk
+// candidate private keys, derive each address, and compare. Consecutive keys
+// differ by G, so a whole batch is advanced with one shared field inversion.
+
+static uint8_t g_target160[20];
+static bool g_brute_compressed = true, g_brute_both = false;
+
+// Add the constant generator G to n local points, sharing one inversion.
+static void step_addG(std::vector<Fe> &px, std::vector<Fe> &py, int n,
+                      std::vector<Fe> &dx, std::vector<Fe> &pre, std::vector<char> &slow) {
+    for (int i = 0; i < n; i++) {
+        fe_sub(dx[i], G.x, px[i]);
+        slow[i] = fe_is_zero(dx[i]);
+        if (slow[i]) dx[i] = FE_ONE;
+        if (i == 0) pre[0] = dx[0];
+        else fe_mul(pre[i], pre[i - 1], dx[i]);
+    }
+    Fe inv;
+    fe_inv(inv, pre[n - 1]);
+    for (int i = n - 1; i >= 0; i--) {
+        Fe idx;
+        if (i > 0) { fe_mul(idx, inv, pre[i - 1]); fe_mul(inv, inv, dx[i]); }
+        else idx = inv;
+        if (slow[i]) {   // px == Gx: this is a doubling
+            Pt r = pt_add(Pt{px[i], py[i], false}, G);
+            px[i] = r.x; py[i] = r.y;
+            continue;
+        }
+        Fe lam, t, x3, y3;
+        fe_sub(t, G.y, py[i]);
+        fe_mul(lam, t, idx);
+        fe_sqr(x3, lam);
+        fe_sub(x3, x3, px[i]);
+        fe_sub(x3, x3, G.x);
+        fe_sub(t, px[i], x3);
+        fe_mul(y3, lam, t);
+        fe_sub(y3, y3, py[i]);
+        px[i] = x3; py[i] = y3;
+    }
+}
+
+#define BRUTE_B 1024
+
+static void brute_worker(u128 lo, u128 hi) {
+    if (lo >= hi) return;
+    u128 span = hi - lo;
+    int B = (int)std::min<u128>(BRUTE_B, span);
+    u128 S = (span + B - 1) / B;         // keys handled per lane
+    std::vector<Fe> px(B), py(B), dx(B), pre(B);
+    std::vector<char> slow(B);
+    std::vector<u128> base(B);
+    for (int j = 0; j < B; j++) {
+        base[j] = lo + (u128)j * S;
+        Pt p = mulG(base[j]);            // worst case 2^125 is still fine
+        px[j] = p.x; py[j] = p.y;
+    }
+    uint8_t h[20];
+    for (u128 s = 0; s < S && !g_stop; s++) {
+        for (int j = 0; j < B; j++) {
+            u128 key = base[j] + s;
+            if (key >= hi) continue;     // lanes overhang the top of the range
+            Pt P{px[j], py[j], false};
+            hash160_of(P, g_brute_compressed, h);
+            bool hit = memcmp(h, g_target160, 20) == 0;
+            if (!hit && g_brute_both) { hash160_of(P, !g_brute_compressed, h); hit = memcmp(h, g_target160, 20) == 0; }
+            if (hit) { g_key = key; g_found = true; g_stop = true; return; }
+        }
+        g_ops += B;
+        if ((s & 1023) == 0 && g_stop) return;
+        step_addG(px, py, B, dx, pre, slow);
     }
 }
 
@@ -396,6 +514,25 @@ static int selftest() {
         ok = ok && pt_eq(mulG(refd[i]), ref[i]);
     }
     check(ok, "kangaroo kernel (batched jumps) matches the reference implementation");
+
+    uint8_t h160[20], d160[20];
+    hash160_of(mulG(0xD2C55), true, h160);
+    check(decode_address("1HsMJxNiV7TLxmoF6uJNkydxPFDog4NQum", d160) && memcmp(h160, d160, 20) == 0,
+          "Base58 address decodes to the matching hash160");
+    check(!decode_address("1HsMJxNiV7TLxmoF6uJNkydxPFDog4NQ0m", d160), "a bad checksum is rejected");
+    // the incremental +G walk must land on the same points as scalar multiplication
+    {
+        const int bn = 40;
+        std::vector<Fe> bx(bn), by(bn), bdx(bn), bpre(bn);
+        std::vector<char> bslow(bn);
+        for (int i = 0; i < bn; i++) { Pt p = mulG(500 + i); bx[i] = p.x; by[i] = p.y; }
+        bool bok = true;
+        for (int s = 1; s <= 30; s++) {
+            step_addG(bx, by, bn, bdx, bpre, bslow);
+            for (int i = 0; i < bn; i++) bok = bok && pt_eq(mulG(500 + i + s), Pt{bx[i], by[i], false});
+        }
+        check(bok, "brute-force +G stepping matches scalar multiplication");
+    }
     printf(fails ? "SELF TEST FAILED\n" : "self test passed\n");
     return fails ? 1 : 0;
 }
@@ -403,13 +540,22 @@ static int selftest() {
 // ----------------------------------------------------------------------- main
 
 static void usage() {
-    puts("Pollard's kangaroo solver for secp256k1 keys in a known range\n"
+    puts("Solver for secp256k1 Bitcoin-puzzle keys in a known range\n"
          "\n"
-         "  kangaroo --pubkey HEX --bits N [options]       puzzle N: key in [2^(N-1), 2^N)\n"
+         "  kangaroo --pubkey HEX --bits N [options]       known public key: kangaroo method\n"
          "  kangaroo --pubkey HEX --start HEX --end HEX    key in [start, end]\n"
+         "  kangaroo --brute --address ADDR --bits N       public key unknown: brute force by address\n"
+         "\n"
+         "The kangaroo method needs the public key and is vastly faster (~2*sqrt(range)).\n"
+         "Brute force is for puzzles whose public key has never been revealed - it has to\n"
+         "try keys one by one (~range/2 on average), so only low puzzles are feasible.\n"
          "\n"
          "options:\n"
-         "  --address ADDR    expected address, checked when the key is found\n"
+         "  --address ADDR    expected address; required for --brute, else used to verify\n"
+         "  --hash160 HEX     target hash160 (40 hex) instead of --address, for --brute\n"
+         "  --brute           search by address, without a public key\n"
+         "  --uncompressed    brute force against the uncompressed address\n"
+         "  --both            brute force against both compressed and uncompressed\n"
          "  --threads T       CPU threads (default: all cores)\n"
          "  --gpu             use the CUDA backend (binary must be built with `make gpu`)\n"
          "  --device N        CUDA device index (default 0)\n"
@@ -426,11 +572,114 @@ static void usage() {
 
 static void on_signal(int) { g_stop = true; }
 
+// Brute force by address (public key unknown). Returns the process exit code.
+static int run_brute(const std::string &address, const std::string &hash160hex, int bits,
+                     const std::string &s_start, const std::string &s_end, int threads,
+                     bool uncompressed, bool both) {
+    u128 start, end;
+    if (bits) {
+        if (bits < 2 || bits > 80) die("--bits must be between 2 and 80 for brute force");
+        start = (u128)1 << (bits - 1);
+        end = ((u128)1 << bits) - 1;
+    } else {
+        if (s_start.empty() || s_end.empty()) die("give either --bits or --start and --end");
+        start = parse_u128(s_start);
+        end = parse_u128(s_end);
+        if (end < start) die("--end is below --start");
+        if (end >> 80) die("brute-force range must be below 2^80");
+    }
+    if (!hash160hex.empty()) {
+        std::string h = strip0x(hash160hex);
+        if (h.size() != 40) die("--hash160 must be exactly 40 hex characters");
+        for (int i = 0; i < 20; i++) g_target160[i] = (uint8_t)(hexval(h[2 * i]) << 4 | hexval(h[2 * i + 1]));
+    } else if (!address.empty()) {
+        if (!decode_address(address, g_target160)) die("could not decode address (bad Base58 or checksum, or not a P2PKH address)");
+    } else {
+        die("brute force needs --address or --hash160");
+    }
+    g_brute_compressed = !uncompressed;
+    g_brute_both = both;
+    if (threads < 1) threads = 1;
+    if (threads > 256) threads = 256;
+
+    u128 width = end - start + 1;
+    double lw = std::log2((double)width);
+
+    auto t0 = std::chrono::steady_clock::now();
+    auto elapsed = [&]() { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
+
+    if (g_json)
+        printf("{\"event\":\"start\",\"mode\":\"brute\",\"backend\":\"cpu: %d threads\",\"start\":\"%s\",\"end\":\"%s\","
+               "\"range_bits\":%.2f,\"keyspace\":\"%.0f\",\"expected_ops\":%.0f}\n",
+               threads, hex_u128(start).c_str(), hex_u128(end).c_str(), lw, (double)width, (double)width / 2);
+    else
+        printf("mode        : brute force by address (public key unknown)\n"
+               "range       : %s .. %s (2^%.2f keys)\nbackend     : cpu: %d threads\n"
+               "match       : %s address\nexpected    : ~%.3g keys (half the range)\n",
+               hex_u128(start).c_str(), hex_u128(end).c_str(), lw, threads,
+               both ? "compressed or uncompressed" : (uncompressed ? "uncompressed" : "compressed"), (double)width / 2);
+    fflush(stdout);
+
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
+
+    std::vector<std::thread> workers;
+    u128 per = (width + threads - 1) / threads;
+    for (int t = 0; t < threads; t++) {
+        u128 lo = start + (u128)t * per;
+        u128 hi = lo + per; if (hi > end + 1) hi = end + 1;
+        if (lo < hi) workers.emplace_back(brute_worker, lo, hi);
+    }
+
+    u64 lastOps = 0; double lastT = 0, nextReport = 1.0;
+    while (!g_stop) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        double t = elapsed();
+        if (t < nextReport) continue;
+        nextReport = t + 1.0;
+        u64 ops = g_ops;
+        double rate = (ops - lastOps) / (t - lastT);
+        lastOps = ops; lastT = t;
+        if (g_json)
+            printf("{\"event\":\"progress\",\"ops\":%llu,\"rate\":%.0f,\"elapsed\":%.2f}\n",
+                   (unsigned long long)ops, rate, t);
+        else
+            printf("\r%7.1fs  %6.2f Mkeys/s  %llu keys tried (%.4f%% of the range)   ", t, rate / 1e6,
+                   (unsigned long long)ops, 100.0 * (double)ops / (double)width);
+        fflush(stdout);
+    }
+    for (auto &w : workers) w.join();
+
+    if (g_found) {
+        Pt p = mulG(g_key);
+        std::string addr_c = address_of(p);   // compressed address
+        uint8_t h[20]; hash160_of(p, false, h);
+        uint8_t v[21]; v[0] = 0; memcpy(v + 1, h, 20);
+        std::string addr_u = hashes::base58check(v, 21);
+        bool comp = (addr_c == address) || g_brute_compressed;
+        std::string addr = comp ? addr_c : addr_u;
+        bool match = address.empty() ? true : (addr_c == address || addr_u == address);
+        if (g_json)
+            printf("{\"event\":\"found\",\"key\":\"%s\",\"pubkey\":\"%s\",\"address\":\"%s\",\"address_checked\":%s,"
+                   "\"address_match\":%s,\"ops\":%llu,\"elapsed\":%.3f}\n",
+                   hex_u128(g_key).c_str(), pubkey_hex(p).c_str(), addr.c_str(), address.empty() ? "false" : "true",
+                   match ? "true" : "false", (unsigned long long)g_ops.load(), elapsed());
+        else
+            printf("\nKEY FOUND\n  private key : %s\n  public key  : %s\n  address     : %s\n  work        : %llu keys in %.1f s\n",
+                   hex_u128(g_key).c_str(), pubkey_hex(p).c_str(), addr.c_str(), (unsigned long long)g_ops.load(), elapsed());
+        fflush(stdout);
+        return match ? 0 : 3;
+    }
+    if (g_json) printf("{\"event\":\"stopped\",\"ops\":%llu,\"elapsed\":%.2f}\n", (unsigned long long)g_ops.load(), elapsed());
+    else printf("\nstopped\n");
+    return 2;
+}
+
 int main(int argc, char **argv) {
-    std::string pubkey, address, s_start, s_end, derive;
+    std::string pubkey, address, s_start, s_end, derive, hash160;
     int bits = 0, threads = (int)std::thread::hardware_concurrency(), device = 0, dp = -1;
     long long kangaroos = 0;
-    bool use_gpu = false, info = false, st = false;
+    bool use_gpu = false, info = false, st = false, brute = false, uncompressed = false, both = false;
     u64 seed = ((u64)std::random_device{}() << 32) ^ std::random_device{}();
     if (threads < 1) threads = 1;
 
@@ -445,6 +694,10 @@ int main(int argc, char **argv) {
         else if (a == "--start") s_start = val();
         else if (a == "--end") s_end = val();
         else if (a == "--address") address = val();
+        else if (a == "--hash160") hash160 = val();
+        else if (a == "--brute") brute = true;
+        else if (a == "--uncompressed") uncompressed = true;
+        else if (a == "--both") both = true;
         else if (a == "--threads") threads = atoi(val().c_str());
         else if (a == "--gpu") use_gpu = true;
         else if (a == "--device") device = atoi(val().c_str());
@@ -482,6 +735,12 @@ int main(int argc, char **argv) {
         printf("private key : %s\npublic key  : %s\naddress     : %s\n", hex_u128(k).c_str(),
                pubkey_hex(p).c_str(), address_of(p).c_str());
         return 0;
+    }
+    // Brute force: no public key, only an address or hash160.
+    if (brute || (pubkey.empty() && (!address.empty() || !hash160.empty()))) {
+        if (!pubkey.empty()) die("--brute searches by address; do not pass --pubkey (use the kangaroo method instead)");
+        if (use_gpu) die("the brute-force mode is CPU-only in this build");
+        return run_brute(address, hash160, bits, s_start, s_end, threads, uncompressed, both);
     }
     if (pubkey.empty()) { usage(); return 1; }
 

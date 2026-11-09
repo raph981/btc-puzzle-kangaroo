@@ -51,39 +51,57 @@ class Job:
             return json.loads(json.dumps(self.state))
 
     def start(self, req):
-        target = {}
+        brute = bool(req.get("brute"))
+        target = {"brute": brute}
         if "puzzle" in req:
             p = next((p for p in PUZZLES if p["bits"] == req["puzzle"]), None)
             if not p:
                 raise ValueError("unknown puzzle")
-            target = {"label": "Puzzle #%d" % p["bits"], "pubkey": p["pubkey"], "address": p["address"], "bits": p["bits"]}
+            target.update(label="Puzzle #%d" % p["bits"], pubkey=p["pubkey"], address=p["address"], bits=p["bits"])
         else:
             c = req.get("custom") or {}
-            for k in ("pubkey", "start", "end"):
+            target["label"] = "Custom range"
+            for k in ("start", "end"):
                 if not HEX.match(str(c.get(k, ""))):
                     raise ValueError("%s must be a hex value" % k)
-            target = {"label": "Custom range", "pubkey": c["pubkey"], "start": c["start"], "end": c["end"]}
-            if c.get("address"):
-                if not ADDR.match(c["address"]):
-                    raise ValueError("address does not look like a Bitcoin address")
+                target[k] = c[k]
+            if brute:
+                if not ADDR.match(str(c.get("address", ""))):
+                    raise ValueError("brute force needs a target Bitcoin address")
                 target["address"] = c["address"]
+            else:
+                if not HEX.match(str(c.get("pubkey", ""))):
+                    raise ValueError("pubkey must be a hex value")
+                target["pubkey"] = c["pubkey"]
+                if c.get("address"):
+                    if not ADDR.match(c["address"]):
+                        raise ValueError("address does not look like a Bitcoin address")
+                    target["address"] = c["address"]
 
-        cmd = [BINARY, "--json", "--pubkey", target["pubkey"]]
+        if brute and "bits" in target and target["bits"] > 56:
+            raise ValueError("brute force over a 2^%d range is not feasible - use a known-public-key puzzle" % target["bits"])
+
+        cmd = [BINARY, "--json"]
+        if brute:
+            cmd += ["--brute", "--address", target["address"]]
+        else:
+            cmd += ["--pubkey", target["pubkey"]]
+            if target.get("address"):
+                cmd += ["--address", target["address"]]
         if "bits" in target:
             cmd += ["--bits", str(target["bits"])]
         else:
             cmd += ["--start", target["start"], "--end", target["end"]]
-        if target.get("address"):
-            cmd += ["--address", target["address"]]
-        backend = "gpu" if req.get("backend") == "gpu" else "cpu"
+        backend = "gpu" if (req.get("backend") == "gpu" and not brute) else "cpu"
         if backend == "gpu":
             cmd += ["--gpu", "--device", str(int(req.get("device", 0)))]
         else:
             cmd += ["--threads", str(max(1, min(256, int(req.get("threads", os.cpu_count() or 1)))))]
-        if req.get("kangaroos"):
-            cmd += ["--kangaroos", str(max(2, min(1 << 26, int(req["kangaroos"]))))]
-        if req.get("dp") not in (None, ""):
-            cmd += ["--dp", str(max(0, min(60, int(req["dp"]))))]
+        if not brute:
+            if req.get("kangaroos"):
+                cmd += ["--kangaroos", str(max(2, min(1 << 26, int(req["kangaroos"]))))]
+            if req.get("dp") not in (None, ""):
+                cmd += ["--dp", str(max(0, min(60, int(req["dp"]))))]
 
         with self.lock:
             if self.proc and self.proc.poll() is None:
@@ -119,7 +137,10 @@ class Job:
                 kind = ev.get("event")
                 if kind == "start":
                     st["start"] = ev
-                    self._log("started on %s: %d kangaroos, %d DP bits" % (ev["backend"], ev["kangaroos"], ev["dp_bits"]))
+                    if ev.get("mode") == "brute":
+                        self._log("started brute force on %s over 2^%.1f keys" % (ev["backend"], ev["range_bits"]))
+                    else:
+                        self._log("started on %s: %d kangaroos, %d DP bits" % (ev["backend"], ev["kangaroos"], ev["dp_bits"]))
                 elif kind == "progress":
                     st["progress"] = ev
                     st["history"].append([ev["elapsed"], ev["rate"]])
@@ -127,7 +148,8 @@ class Job:
                 elif kind == "found":
                     st["result"] = ev
                     st["status"] = "found"
-                    self._log("key found after %d jumps" % ev["ops"])
+                    unit = "keys" if (st.get("start") or {}).get("mode") == "brute" else "jumps"
+                    self._log("key found after %d %s" % (ev["ops"], unit))
                 elif kind == "stopped":
                     st["status"] = "stopped"
                     self._log("stopped by user")

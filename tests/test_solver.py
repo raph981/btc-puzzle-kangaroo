@@ -50,6 +50,20 @@ def main():
         assert r and r[0]["key"] == "d2c55", "range %s..%s failed" % (start, end)
         print("  [ ok ] range %s..%s" % (start, end))
 
+    print("brute force by address (public key unknown)")
+    # full low puzzle, given only its address
+    p = PUZZLES[20]
+    t = time.time()
+    r = [e for e in run(["--json", "--brute", "--bits", "20", "--address", p["address"]]) if e["event"] == "found"]
+    assert r and r[0]["key"] == "d2c55" and r[0]["address"] == p["address"], "brute puzzle 20 failed"
+    print("  [ ok ] puzzle #20  key=%s  (%.1fs, %d keys)" % (r[0]["key"], time.time() - t, r[0]["ops"]))
+    # a self-derived target in a custom range, found by address and by raw hash160
+    der = subprocess.run([BIN, "--derive", "6bc1f"], capture_output=True, text=True).stdout
+    addr = [ln.split(":")[1].strip() for ln in der.splitlines() if ln.startswith("address")][0]
+    r = [e for e in run(["--json", "--brute", "--start", "60000", "--end", "70000", "--address", addr]) if e["event"] == "found"]
+    assert r and r[0]["key"] == "6bc1f" and r[0]["address"] == addr, "brute custom range failed"
+    print("  [ ok ] custom range by address  key=%s" % r[0]["key"])
+
     print("solving puzzles from their public keys")
     for bits in which:
         solve(bits)

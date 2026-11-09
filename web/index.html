@@ -90,6 +90,15 @@
   <div class="grid">
     <div>
       <div class="card">
+        <h2>Method</h2>
+        <div class="seg" role="group" aria-label="Method">
+          <button id="m-kang" class="on">Known public key</button>
+          <button id="m-brute">Address only</button>
+        </div>
+        <p class="hint" id="methodhint"></p>
+      </div>
+
+      <div class="card">
         <h2>Target</h2>
         <div class="chips" id="chips"></div>
         <dl id="target">
@@ -99,13 +108,15 @@
           <dt>Expected work</dt><dd id="t-work">–</dd>
         </dl>
         <div id="custom" hidden>
-          <label for="c-pub">Public key (hex, compressed or uncompressed)</label>
-          <input type="text" id="c-pub" spellcheck="false" placeholder="02… / 03… / 04…">
+          <div id="c-pub-row">
+            <label for="c-pub">Public key (hex, compressed or uncompressed)</label>
+            <input type="text" id="c-pub" spellcheck="false" placeholder="02… / 03… / 04…">
+          </div>
           <div class="two">
             <div><label for="c-start">Range start (hex)</label><input type="text" id="c-start" spellcheck="false" placeholder="200000000000000000"></div>
             <div><label for="c-end">Range end (hex)</label><input type="text" id="c-end" spellcheck="false" placeholder="3fffffffffffffffff"></div>
           </div>
-          <label for="c-addr">Expected address (optional, used to verify the result)</label>
+          <label for="c-addr" id="c-addr-label">Expected address (optional, used to verify the result)</label>
           <input type="text" id="c-addr" spellcheck="false">
         </div>
       </div>
@@ -147,12 +158,13 @@
       </div>
 
       <div class="tiles">
-        <div class="tile"><span>Speed</span><b id="s-rate">–</b><small>jumps per second</small></div>
-        <div class="tile"><span>Jumps done</span><b id="s-ops">–</b><small id="s-ops2">&nbsp;</small></div>
+        <div class="tile"><span>Speed</span><b id="s-rate">–</b><small id="s-rate2">jumps per second</small></div>
+        <div class="tile"><span id="s-ops-l">Jumps done</span><b id="s-ops">–</b><small id="s-ops2">&nbsp;</small></div>
         <div class="tile"><span>Elapsed</span><b id="s-time">–</b><small id="s-eta">&nbsp;</small></div>
-        <div class="tile"><span>Kangaroos</span><b id="s-kang">–</b><small id="s-backend">&nbsp;</small></div>
-        <div class="tile"><span>Distinguished points</span><b id="s-dps">–</b><small id="s-dpbits">&nbsp;</small></div>
-        <div class="tile"><span>Herd restarts</span><b id="s-resets">–</b><small>merged walks replaced</small></div>
+        <div class="tile" id="tile-kang"><span>Kangaroos</span><b id="s-kang">–</b><small id="s-backend">&nbsp;</small></div>
+        <div class="tile" id="tile-dps"><span>Distinguished points</span><b id="s-dps">–</b><small id="s-dpbits">&nbsp;</small></div>
+        <div class="tile" id="tile-resets"><span>Herd restarts</span><b id="s-resets">–</b><small>merged walks replaced</small></div>
+        <div class="tile" id="tile-threads" hidden><span>Threads</span><b id="s-threads">–</b><small>CPU workers</small></div>
       </div>
 
       <div class="card">
@@ -176,7 +188,8 @@
 
 <script>
 const $ = id => document.getElementById(id);
-let cfg = null, sel = null, backend = 'cpu', state = {status: 'idle'}, busy = false;
+let cfg = null, sel = null, backend = 'cpu', method = 'kangaroo', state = {status: 'idle'}, busy = false;
+const BRUTE_MAX = 56;   // puzzles above this are not feasible to brute force
 
 const si = (n, d = 2) => {
   if (n == null || !isFinite(n)) return '–';
@@ -190,18 +203,47 @@ const dur = s => {
   const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
   return h ? `${h}h ${String(m).padStart(2, '0')}m` : m ? `${m}m ${String(x).padStart(2, '0')}s` : `${x}s`;
 };
-const expectedFor = bits => 2 * Math.sqrt(2 ** (bits - 1));
+const expectedFor = bits => method === 'brute' ? 2 ** (bits - 1) : 2 * Math.sqrt(2 ** (bits - 1));
+const unit = () => method === 'brute' ? 'keys' : 'jumps';
+
+function renderMethod() {
+  const brute = method === 'brute';
+  $('m-kang').classList.toggle('on', !brute);
+  $('m-brute').classList.toggle('on', brute);
+  $('methodhint').textContent = brute
+    ? 'No public key: try every private key and compare the address. Only low puzzles (≤ 2^' + BRUTE_MAX + ') are feasible.'
+    : "Pollard's kangaroo. Needs the public key; about 2·√range operations — vastly faster.";
+  // brute is CPU-only
+  $('b-gpu').disabled = brute || !cfg.info.cuda_build || cfg.info.devices.length === 0;
+  if (brute && backend === 'gpu') { backend = 'cpu'; renderEngine(); }
+  // kangaroo-only tiles
+  for (const id of ['tile-kang', 'tile-dps', 'tile-resets']) $(id).hidden = brute;
+  $('tile-threads').hidden = !brute;
+  $('s-ops-l').textContent = brute ? 'Keys tried' : 'Jumps done';
+  $('s-rate2').textContent = unit() + ' per second';
+  // some chips are infeasible for brute
+  for (const c of $('chips').children) {
+    const b = c.dataset.k === 'custom' ? 0 : +c.dataset.k;
+    c.disabled = brute && b > BRUTE_MAX;
+  }
+  if (brute && sel !== 'custom' && sel > BRUTE_MAX) { sel = 40; }
+  renderTarget();
+}
 
 function renderTarget() {
   for (const c of $('chips').children) c.classList.toggle('on', c.dataset.k === String(sel));
-  const custom = sel === 'custom';
+  const custom = sel === 'custom', brute = method === 'brute';
   $('custom').hidden = !custom; $('target').hidden = custom;
+  $('c-pub-row').hidden = brute;
+  $('c-addr-label').textContent = brute ? 'Target address (required)' : 'Expected address (optional, used to verify the result)';
   if (custom) return;
   const p = cfg.puzzles.find(p => p.bits === sel);
   $('t-addr').textContent = p.address;
-  $('t-pub').textContent = p.pubkey;
+  $('t-pub').textContent = brute ? '(unused in this mode)' : p.pubkey;
   $('t-range').textContent = `2^${p.bits - 1} … 2^${p.bits} − 1`;
-  $('t-work').textContent = `≈ ${si(expectedFor(p.bits))} jumps (2^${(p.bits - 1) / 2 + 1})`;
+  $('t-work').textContent = brute
+    ? `≈ ${si(expectedFor(p.bits))} keys (2^${p.bits - 1}, half the range)`
+    : `≈ ${si(expectedFor(p.bits))} jumps (2^${(p.bits - 1) / 2 + 1})`;
 }
 
 function renderEngine() {
@@ -231,12 +273,15 @@ async function init() {
   $('gpuhint').textContent = gpuOk ? 'GPU: ' + info.devices[0]
     : info.cuda_build ? 'CUDA build, but no NVIDIA device was detected.'
     : 'GPU disabled: the solver was built without CUDA. Run "make gpu" on a machine with the CUDA toolkit.';
+  renderMethod();
   poll(); setInterval(poll, 500);
 }
 
 $('threads').oninput = e => $('threads-out').textContent = e.target.value;
 $('b-cpu').onclick = () => { backend = 'cpu'; renderEngine(); };
-$('b-gpu').onclick = () => { backend = 'gpu'; renderEngine(); };
+$('b-gpu').onclick = () => { if (!$('b-gpu').disabled) { backend = 'gpu'; renderEngine(); } };
+$('m-kang').onclick = () => { method = 'kangaroo'; renderMethod(); };
+$('m-brute').onclick = () => { method = 'brute'; renderMethod(); };
 
 async function post(url, body) {
   const r = await fetch(url, {method: 'POST', body: JSON.stringify(body || {}),
@@ -250,9 +295,11 @@ $('go').onclick = async () => {
   try {
     if (state.status === 'running') await post('/api/stop');
     else {
-      const req = {backend, threads: +$('threads').value};
-      if ($('kang').value) req.kangaroos = +$('kang').value;
-      if ($('dp').value !== '') req.dp = +$('dp').value;
+      const req = {backend, threads: +$('threads').value, brute: method === 'brute'};
+      if (method === 'kangaroo') {
+        if ($('kang').value) req.kangaroos = +$('kang').value;
+        if ($('dp').value !== '') req.dp = +$('dp').value;
+      }
       if (sel === 'custom') req.custom = {pubkey: $('c-pub').value.trim(), start: $('c-start').value.trim(),
                                           end: $('c-end').value.trim(), address: $('c-addr').value.trim()};
       else req.puzzle = sel;
@@ -291,22 +338,23 @@ function render() {
   $('s-kang').textContent = st ? si(st.kangaroos, 1) : '–';
   $('s-backend').textContent = st ? st.backend : ' ';
   $('s-dps').textContent = p ? si(p.dps, 1) : '–';
-  $('s-dpbits').textContent = st ? `1 in 2^${st.dp_bits} points` : ' ';
+  $('s-dpbits').textContent = st && st.dp_bits != null ? `1 in 2^${st.dp_bits} points` : ' ';
   $('s-resets').textContent = p ? si(p.resets, 1) : '–';
+  $('s-threads').textContent = st ? (st.backend.match(/(\d+) threads/) || [])[1] || '–' : '–';
   let eta = ' ';
   if (run && rate && exp) eta = ops < exp ? 'about ' + dur((exp - ops) / rate) + ' to the average' : 'past the average: any moment now';
   $('s-eta').textContent = eta;
   const pct = ops != null && exp ? 100 * ops / exp : 0;
   $('bar').style.width = Math.min(100, pct) + '%';
   $('bar').style.background = res ? 'var(--good)' : 'var(--accent)';
-  $('p-pct').textContent = exp ? `${pct.toFixed(1)}% of ≈ ${si(exp)} jumps` : '–';
+  $('p-pct').textContent = exp ? `${pct.toFixed(1)}% of ≈ ${si(exp)} ${unit()}` : '–';
 
   $('result').classList.toggle('show', !!res);
   if (res) {
     $('r-key').textContent = res.key;
     $('r-addr').textContent = res.address;
     $('r-pub').textContent = res.pubkey;
-    $('r-work').textContent = `${si(res.ops)} jumps in ${dur(res.elapsed)}`;
+    $('r-work').textContent = `${si(res.ops)} ${unit()} in ${dur(res.elapsed)}`;
     const b = $('r-badge');
     b.hidden = !res.address_checked;
     b.className = 'badge ' + (res.address_match ? 'ok' : 'no');

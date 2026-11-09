@@ -32,6 +32,28 @@ Command line:
 `--address` is optional and only used to double-check the recovered key. Run `./kangaroo --help`
 for all options.
 
+## Two search modes
+
+| | Needs | Cost | Use for |
+|---|---|---|---|
+| **Kangaroo** (default) | the **public key** | ~`2·sqrt(range)` | puzzles whose public key is on-chain |
+| **Brute force** (`--brute`) | only the **address** | ~`range/2` | puzzles whose public key was never revealed |
+
+Most puzzles only expose the public key once their address has *spent* coins. For the ones that
+never have, there is no public key to run the kangaroo on, and the only option is to try private
+keys one at a time and compare the derived address:
+
+```bash
+./kangaroo --brute --bits 24 --address <address>        # key in [2^23, 2^24)
+./kangaroo --brute --start 800000 --end ffffff --address <address>
+./kangaroo --brute --hash160 <40-hex> --bits 24         # target by raw hash160
+```
+
+Brute force checks the **compressed** address by default; add `--uncompressed`, or `--both` to
+check both. It is CPU-only and, being `~range/2`, is only realistic for low puzzles (roughly up
+to the low 50-bit range on a lot of hardware); above that, only the kangaroo method with a known
+public key is feasible.
+
 ## NVIDIA GPU
 
 ```bash
