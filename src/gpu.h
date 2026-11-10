@@ -3,7 +3,9 @@
 #pragma once
 #include "kernel.h"
 
-#define GPU_GRP 32   // kangaroos per GPU thread (they share one inversion)
+#define GPU_GRP 64   // kangaroos per GPU thread (they share one inversion). On an RTX 3060
+                     // 64 beats 32 (+30%) and 128 (-5%): above 64 the per-thread scratch
+                     // arrays in local memory cost more than the saved inversions
 
 #ifdef WITH_CUDA
 int gpu_device_count();

@@ -68,11 +68,17 @@ make gpu             # needs the CUDA toolkit (nvcc)
 The web interface enables its GPU switch automatically when the binary was built with CUDA and
 a device is present.
 
-**Status of the GPU backend:** the machine this was developed on has no NVIDIA card, so
-`src/gpu_cuda.cu` has not been compiled or run yet. To keep that risk small, the whole
-arithmetic and stepping kernel (`src/kernel.h`) is shared: the GPU runs the same `kang_step()`
-function the CPU backend and the tests use, and the CUDA file is only a thin wrapper around it
-(memory transfers and the kernel launch). It is a straightforward port, not a tuned one.
+**Status of the GPU backend:** tested with CUDA 12.0 and driver 591.86 (WSL2) on an RTX 3060
+Laptop GPU: it solves puzzles 20–60 correctly and runs at about 300 Mjumps/s (vs ~38 Mjumps/s on
+the 12 threads of an i5-11400H); puzzle 60 takes roughly 5–20 s, puzzle 70 a few minutes.
+The arithmetic and stepping kernel (`src/kernel.h`) is shared: the GPU runs the
+same `kang_step()` function the CPU backend and the tests use, and the CUDA file is only a thin
+wrapper around it (memory transfers and the kernel launch). It is a straightforward port, not a
+tuned one.
+
+The Makefile builds PTX only, and the driver JIT-compiles it on first launch. Do not build
+native SASS (`-arch=sm_86` / `-arch=native`): with CUDA 12.0's ptxas that kernel hangs, while
+the driver-JIT'd code from the same source is correct and equally fast.
 
 ## Web interface
 

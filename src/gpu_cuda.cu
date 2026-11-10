@@ -33,7 +33,7 @@ int gpu_device_count() {
 const char *gpu_device_name(int dev) {
     cudaDeviceProp p;
     if (cudaGetDeviceProperties(&p, dev) != cudaSuccess) return "unknown";
-    snprintf(g_name, sizeof g_name, "%s (%d MB)", p.name, (int)(p.totalGlobalMem >> 20));
+    snprintf(g_name, sizeof g_name, "%.200s (%d MB)", p.name, (int)(p.totalGlobalMem >> 20));
     return g_name;
 }
 

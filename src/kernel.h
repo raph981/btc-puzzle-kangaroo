@@ -80,14 +80,8 @@ DEV void fe_mac(u64 a, u64 b, u64 &r, u64 &c) {
     r += lo; hi += (r < lo);
     c = hi;
 }
-DEV void fe_mul(Fe &r, const Fe &a, const Fe &b) {
-    u64 t[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-    for (int i = 0; i < 4; i++) {
-        u64 c = 0;
-        for (int j = 0; j < 4; j++) fe_mac(a.v[i], b.v[j], t[i + j], c);
-        t[i + 4] = c;
-    }
-    // fold the high half: 2^256 == C (mod p)
+// r = t mod p for a 512-bit t (8 limbs); folds the high half using 2^256 == C (mod p)
+DEV void fe_reduce(Fe &r, u64 *t) {
     u64 c = 0;
     for (int i = 0; i < 4; i++) fe_mac(t[4 + i], FE_C, t[i], c);
     u64 lo = c * FE_C, hi = MULHI(c, FE_C);
@@ -100,7 +94,41 @@ DEV void fe_mul(Fe &r, const Fe &a, const Fe &b) {
     if (k) fe_addc(r);
     if (fe_gep(r)) fe_addc(r);
 }
-DEV void fe_sqr(Fe &r, const Fe &a) { fe_mul(r, a, a); }
+DEV void fe_mul(Fe &r, const Fe &a, const Fe &b) {
+    u64 t[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 4; i++) {
+        u64 c = 0;
+        for (int j = 0; j < 4; j++) fe_mac(a.v[i], b.v[j], t[i + j], c);
+        t[i + 4] = c;
+    }
+    fe_reduce(r, t);
+}
+// Squaring: the 6 cross products are computed once and doubled, then the 4
+// squares are added - 10 limb multiplications instead of 16.
+DEV void fe_sqr(Fe &r, const Fe &a) {
+    u64 t[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 3; i++) {
+        u64 c = 0;
+        for (int j = i + 1; j < 4; j++) fe_mac(a.v[i], a.v[j], t[i + j], c);
+        t[i + 4] = c;
+    }
+    for (int i = 7; i > 0; i--) t[i] = (t[i] << 1) | (t[i - 1] >> 63);
+    t[0] <<= 1;
+    u64 c = 0;
+    for (int i = 0; i < 4; i++) {
+        u64 lo = a.v[i] * a.v[i], hi = MULHI(a.v[i], a.v[i]);
+        u64 x = t[2 * i] + c; u64 k = (x < c);
+        x += lo; k += (x < lo); t[2 * i] = x;
+        u64 y = t[2 * i + 1] + k; u64 k2 = (y < k);
+        y += hi; k2 += (y < hi); t[2 * i + 1] = y;
+        c = k2;
+    }
+    fe_reduce(r, t);
+}
+DEV void fe_sqrn(Fe &r, const Fe &a, int n) {
+    r = a;
+    for (int i = 0; i < n; i++) fe_sqr(r, r);
+}
 
 // r = a^e (mod p)
 DEV void fe_pow(Fe &r, const Fe &a, u64 e0, u64 e1, u64 e2, u64 e3) {
@@ -112,8 +140,26 @@ DEV void fe_pow(Fe &r, const Fe &a, u64 e0, u64 e1, u64 e2, u64 e3) {
     }
     r = x;
 }
-DEV void fe_inv(Fe &r, const Fe &a) {   // Fermat: a^(p-2)
-    fe_pow(r, a, 0xFFFFFFFEFFFFFC2DULL, ~0ULL, ~0ULL, ~0ULL);
+// r = a^(p-2) = 1/a (mod p), via the secp256k1 addition chain used by
+// libsecp256k1: 255 squarings and 15 multiplications (vs ~500 for plain
+// square-and-multiply). x_k below is a^(2^k - 1).
+DEV void fe_inv(Fe &r, const Fe &a) {
+    Fe x2, x3, x6, x9, x11, x22, x44, x88, x176, x220, x223, t;
+    fe_sqr(x2, a);          fe_mul(x2, x2, a);
+    fe_sqr(x3, x2);         fe_mul(x3, x3, a);
+    fe_sqrn(x6, x3, 3);     fe_mul(x6, x6, x3);
+    fe_sqrn(x9, x6, 3);     fe_mul(x9, x9, x3);
+    fe_sqrn(x11, x9, 2);    fe_mul(x11, x11, x2);
+    fe_sqrn(x22, x11, 11);  fe_mul(x22, x22, x11);
+    fe_sqrn(x44, x22, 22);  fe_mul(x44, x44, x22);
+    fe_sqrn(x88, x44, 44);  fe_mul(x88, x88, x44);
+    fe_sqrn(x176, x88, 88); fe_mul(x176, x176, x88);
+    fe_sqrn(x220, x176, 44); fe_mul(x220, x220, x44);
+    fe_sqrn(x223, x220, 3); fe_mul(x223, x223, x3);
+    fe_sqrn(t, x223, 23);   fe_mul(t, t, x22);
+    fe_sqrn(t, t, 5);       fe_mul(t, t, a);
+    fe_sqrn(t, t, 3);       fe_mul(t, t, x2);
+    fe_sqrn(t, t, 2);       fe_mul(r, t, a);
 }
 
 // Advance n kangaroos by nsteps jumps each.

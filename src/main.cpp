@@ -487,6 +487,31 @@ static int selftest() {
     Fe a = fe_from_hex("DEADBEEF00000000FFFFFFFFFFFFFFFF123456789ABCDEF00FEDCBA987654321"), ai, one;
     fe_inv(ai, a); fe_mul(one, a, ai);
     check(fe_eq(one, FE_ONE), "field inversion");
+    {   // squaring and the inversion chain against plain multiplication / a^(p-2)
+        Rng r{7};
+        bool sq = true, iv = true;
+        Fe pm1 = fe_from_hex("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2E");
+        for (int i = 0; i < 2000; i++) {
+            Fe x, s1, s2, i1, i2;
+            if (i == 0) x = pm1;
+            else if (i == 1) { x.v[0] = 1; x.v[1] = x.v[2] = x.v[3] = 0; }
+            else if (i == 2) { x.v[0] = x.v[1] = x.v[2] = ~0ULL; x.v[3] = 0x7FFFFFFFFFFFFFFFULL; }
+            else {
+                for (int k = 0; k < 4; k++) x.v[k] = r.next();
+                if (fe_gep(x)) fe_addc(x);
+                if (fe_is_zero(x)) continue;
+            }
+            fe_sqr(s1, x); fe_mul(s2, x, x);
+            sq = sq && fe_eq(s1, s2);
+            if (i < 200) {
+                fe_inv(i1, x);
+                fe_pow(i2, x, 0xFFFFFFFEFFFFFC2DULL, ~0ULL, ~0ULL, ~0ULL);
+                iv = iv && fe_eq(i1, i2);
+            }
+        }
+        check(sq, "dedicated squaring matches multiplication");
+        check(iv, "addition-chain inversion matches a^(p-2)");
+    }
     check(pt_eq(pt_add(mulG(1000), mulG(2345)), mulG(3345)), "point addition is consistent with scalar multiplication");
     check(address_of(mulG(1)) == "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH", "address of private key 1 (SHA-256, RIPEMD-160, Base58)");
     check(pt_eq(parse_pubkey(pubkey_hex(mulG(0xD2C55))), mulG(0xD2C55)), "compressed public key round trip");

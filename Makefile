@@ -1,7 +1,11 @@
 CXX      ?= g++
 CXXFLAGS ?= -O3 -march=native -std=c++17 -Wall -Wextra -pthread
 NVCC     ?= nvcc
-NVFLAGS  ?= -O3 -std=c++17
+# Ship PTX only and let the NVIDIA driver JIT-compile it for the installed GPU.
+# Do not switch to -arch=sm_XX/native: with CUDA 12.0, ptxas' sm_86 SASS for the
+# kangaroo kernel hangs on an RTX 3060, while the driver's JIT of the same PTX
+# is correct and just as fast. compute_52 PTX runs on every GPU CUDA 12 supports.
+NVFLAGS  ?= -O3 -std=c++17 -gencode arch=compute_52,code=compute_52
 
 SRC = src/main.cpp
 HDR = src/kernel.h src/hash.h src/gpu.h
