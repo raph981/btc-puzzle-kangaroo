@@ -150,6 +150,10 @@ class Job:
                     st["status"] = "found"
                     unit = "keys" if (st.get("start") or {}).get("mode") == "brute" else "jumps"
                     self._log("key found after %d %s" % (ev["ops"], unit))
+                elif kind == "exhausted":
+                    st["exhausted"] = ev
+                    st["status"] = "exhausted"
+                    self._log("range exhausted: the key is not in this range (%d keys checked)" % ev["ops"])
                 elif kind == "stopped":
                     st["status"] = "stopped"
                     self._log("stopped by user")

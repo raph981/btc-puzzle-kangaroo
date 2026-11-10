@@ -49,6 +49,10 @@ keys one at a time and compare the derived address:
 ./kangaroo --brute --hash160 <40-hex> --bits 24         # target by raw hash160
 ```
 
+Unlike the kangaroo method, brute force is not probabilistic: every key in the range is checked
+exactly once, so it always ends by 100%. If the key is not in the range, it stops after the last
+key and reports `exhausted` (exit code 4).
+
 Brute force checks the **compressed** address by default; add `--uncompressed`, or `--both` to
 check both. It is CPU-only and, being `~range/2`, is only realistic for low puzzles (roughly up
 to the low 50-bit range on a lot of hardware); above that, only the kangaroo method with a known

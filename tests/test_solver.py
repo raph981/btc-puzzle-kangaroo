@@ -63,6 +63,14 @@ def main():
     r = [e for e in run(["--json", "--brute", "--start", "60000", "--end", "70000", "--address", addr]) if e["event"] == "found"]
     assert r and r[0]["key"] == "6bc1f" and r[0]["address"] == addr, "brute custom range failed"
     print("  [ ok ] custom range by address  key=%s" % r[0]["key"])
+    # a range that does not contain the key must end, after checking exactly every key once
+    res = subprocess.run([BIN, "--json", "--brute", "--start", "70001", "--end", "90000", "--address", addr],
+                         capture_output=True, text=True, timeout=120)
+    ev = [json.loads(ln) for ln in res.stdout.splitlines() if ln.startswith("{")]
+    ex = [e for e in ev if e["event"] == "exhausted"]
+    width = 0x90000 - 0x70001 + 1
+    assert res.returncode == 4 and ex and ex[0]["ops"] == width, "exhausted range: %r" % ev[-1:]
+    print("  [ ok ] key outside the range: search ends after exactly %d keys" % width)
 
     print("solving puzzles from their public keys")
     for bits in which:

@@ -12,6 +12,7 @@
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 16px 48px; }
@@ -24,7 +25,9 @@
           border: 1px solid var(--line); color: var(--muted); display: flex; align-items: center; gap: 8px; }
   .pill i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
   .pill.running { color: var(--info); } .pill.running i { animation: pulse 1.1s infinite; }
-  .pill.found { color: var(--good); } .pill.error { color: var(--bad); }
+  .pill.found { color: var(--good); } .pill.error { color: var(--bad); } .pill.exhausted { color: var(--accent); }
+  .result.none { border-color: var(--accent); }
+  .result.none .key { color: var(--accent); }
   @keyframes pulse { 50% { opacity: .25; } }
   .grid { display: grid; grid-template-columns: 380px 1fr; gap: 16px; align-items: start; }
   @media (max-width: 880px) { .grid { grid-template-columns: 1fr; } }
@@ -168,9 +171,9 @@
       </div>
 
       <div class="card">
-        <h2>Progress against the expected work</h2>
+        <h2 id="p-title">Progress against the expected work</h2>
         <div class="bar"><div id="bar"></div></div>
-        <div class="barlabel"><span id="p-pct">–</span><span>The search is probabilistic: it usually ends between 50% and 200%.</span></div>
+        <div class="barlabel"><span id="p-pct">–</span><span id="p-note">The search is probabilistic: it usually ends between 50% and 200%.</span></div>
       </div>
 
       <div class="card">
@@ -321,14 +324,17 @@ async function poll() {
 function render() {
   const s = state, run = s.status === 'running';
   $('pill').className = 'pill ' + s.status;
-  $('pilltext').textContent = {idle: 'idle', running: 'searching', found: 'key found', stopped: 'stopped', error: 'error'}[s.status]
+  $('pilltext').textContent = {idle: 'idle', running: 'searching', found: 'key found', stopped: 'stopped', error: 'error', exhausted: 'not in range'}[s.status]
     + (s.target && s.status !== 'idle' ? ' · ' + s.target.label : '');
   $('go').textContent = run ? 'Stop search' : 'Start search';
   $('go').classList.toggle('stop', run);
   if (s.status === 'error' && !busy) $('err').textContent = s.error || '';
 
-  const st = s.start, p = s.progress, res = s.result;
-  const ops = res ? res.ops : p ? p.ops : null, exp = st ? st.expected_ops : null;
+  const st = s.start, p = s.progress, res = s.result, none = s.exhausted;
+  // brute force sweeps the range: it has a hard end (100%), measure against the whole keyspace
+  const sweep = !!(st && st.mode === 'brute');
+  const ops = res ? res.ops : none ? none.ops : p ? p.ops : null;
+  const exp = st ? (sweep ? st.total_ops : st.expected_ops) : null;
   const elapsed = res ? res.elapsed : p ? p.elapsed : null;
   const rate = p ? p.rate : (res && res.elapsed > 0 ? res.ops / res.elapsed : null);
   $('s-rate').textContent = si(rate);
@@ -342,14 +348,33 @@ function render() {
   $('s-resets').textContent = p ? si(p.resets, 1) : '–';
   $('s-threads').textContent = st ? (st.backend.match(/(\d+) threads/) || [])[1] || '–' : '–';
   let eta = ' ';
-  if (run && rate && exp) eta = ops < exp ? 'about ' + dur((exp - ops) / rate) + ' to the average' : 'past the average: any moment now';
+  if (run && rate && exp) eta = sweep ? 'at most ' + dur(Math.max(0, exp - ops) / rate) + ' left'
+    : ops < exp ? 'about ' + dur((exp - ops) / rate) + ' to the average' : 'past the average: any moment now';
   $('s-eta').textContent = eta;
   const pct = ops != null && exp ? 100 * ops / exp : 0;
   $('bar').style.width = Math.min(100, pct) + '%';
   $('bar').style.background = res ? 'var(--good)' : 'var(--accent)';
-  $('p-pct').textContent = exp ? `${pct.toFixed(1)}% of ≈ ${si(exp)} ${unit()}` : '–';
+  $('p-pct').textContent = !exp ? '–' : sweep ? `${Math.min(100, pct).toFixed(1)}% of the range (${si(exp)} keys)`
+    : `${pct.toFixed(1)}% of ≈ ${si(exp)} ${unit()}`;
+  const bruteUi = st ? sweep : method === 'brute';
+  $('p-title').textContent = bruteUi ? 'Range searched' : 'Progress against the expected work';
+  $('p-note').textContent = bruteUi ? 'Every key is checked once: the search always ends by 100% of the range.'
+    : 'The search is probabilistic: it usually ends between 50% and 200%.';
 
-  $('result').classList.toggle('show', !!res);
+  $('result').classList.toggle('show', !!(res || none));
+  $('result').classList.toggle('none', !res && !!none);
+  if (!res && none) {
+    $('result').querySelector('h2').textContent = 'Key not in this range';
+    $('r-key').textContent = 'range exhausted';
+    $('r-addr').textContent = s.target ? s.target.address : '–';
+    $('r-badge').hidden = true;
+    $('r-pub').textContent = '–';
+    $('r-work').textContent = `all ${si(none.ops)} keys checked in ${dur(none.elapsed)}`;
+    $('copy').hidden = true;
+  } else {
+    $('result').querySelector('h2').textContent = 'Private key found';
+    $('copy').hidden = false;
+  }
   if (res) {
     $('r-key').textContent = res.key;
     $('r-addr').textContent = res.address;

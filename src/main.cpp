@@ -332,7 +332,9 @@ static void step_addG(std::vector<Fe> &px, std::vector<Fe> &py, int n,
 
 #define BRUTE_B 1024
 
-static void brute_worker(u128 lo, u128 hi) {
+static std::atomic<int> g_brute_done(0);   // workers that have finished their share
+
+static void brute_scan(u128 lo, u128 hi) {
     if (lo >= hi) return;
     u128 span = hi - lo;
     int B = (int)std::min<u128>(BRUTE_B, span);
@@ -347,19 +349,25 @@ static void brute_worker(u128 lo, u128 hi) {
     }
     uint8_t h[20];
     for (u128 s = 0; s < S && !g_stop; s++) {
+        u64 checked = 0;
         for (int j = 0; j < B; j++) {
             u128 key = base[j] + s;
             if (key >= hi) continue;     // lanes overhang the top of the range
+            checked++;
             Pt P{px[j], py[j], false};
             hash160_of(P, g_brute_compressed, h);
             bool hit = memcmp(h, g_target160, 20) == 0;
             if (!hit && g_brute_both) { hash160_of(P, !g_brute_compressed, h); hit = memcmp(h, g_target160, 20) == 0; }
-            if (hit) { g_key = key; g_found = true; g_stop = true; return; }
+            if (hit) { g_key = key; g_ops += checked; g_found = true; g_stop = true; return; }
         }
-        g_ops += B;
-        if ((s & 1023) == 0 && g_stop) return;
+        g_ops += checked;                // count real keys only, so a full sweep is exactly the range
         step_addG(px, py, B, dx, pre, slow);
     }
+}
+
+static void brute_worker(u128 lo, u128 hi) {
+    brute_scan(lo, hi);
+    g_brute_done++;
 }
 
 static void init_herd(u32 nk, int bits, Rng &rng) {
@@ -610,7 +618,7 @@ static int run_brute(const std::string &address, const std::string &hash160hex, 
 
     if (g_json)
         printf("{\"event\":\"start\",\"mode\":\"brute\",\"backend\":\"cpu: %d threads\",\"start\":\"%s\",\"end\":\"%s\","
-               "\"range_bits\":%.2f,\"keyspace\":\"%.0f\",\"expected_ops\":%.0f}\n",
+               "\"range_bits\":%.2f,\"total_ops\":%.0f,\"expected_ops\":%.0f}\n",
                threads, hex_u128(start).c_str(), hex_u128(end).c_str(), lw, (double)width, (double)width / 2);
     else
         printf("mode        : brute force by address (public key unknown)\n"
@@ -632,13 +640,9 @@ static int run_brute(const std::string &address, const std::string &hash160hex, 
     }
 
     u64 lastOps = 0; double lastT = 0, nextReport = 1.0;
-    while (!g_stop) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        double t = elapsed();
-        if (t < nextReport) continue;
-        nextReport = t + 1.0;
+    auto progress = [&](double t) {
         u64 ops = g_ops;
-        double rate = (ops - lastOps) / (t - lastT);
+        double rate = t > lastT ? (ops - lastOps) / (t - lastT) : 0;
         lastOps = ops; lastT = t;
         if (g_json)
             printf("{\"event\":\"progress\",\"ops\":%llu,\"rate\":%.0f,\"elapsed\":%.2f}\n",
@@ -647,6 +651,14 @@ static int run_brute(const std::string &address, const std::string &hash160hex, 
             printf("\r%7.1fs  %6.2f Mkeys/s  %llu keys tried (%.4f%% of the range)   ", t, rate / 1e6,
                    (unsigned long long)ops, 100.0 * (double)ops / (double)width);
         fflush(stdout);
+    };
+    const int nworkers = (int)workers.size();
+    while (!g_stop && g_brute_done < nworkers) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        double t = elapsed();
+        if (t < nextReport) continue;
+        nextReport = t + 1.0;
+        progress(t);
     }
     for (auto &w : workers) w.join();
 
@@ -669,6 +681,16 @@ static int run_brute(const std::string &address, const std::string &hash160hex, 
                    hex_u128(g_key).c_str(), pubkey_hex(p).c_str(), addr.c_str(), (unsigned long long)g_ops.load(), elapsed());
         fflush(stdout);
         return match ? 0 : 3;
+    }
+    if (!g_stop) {   // every worker finished its share: the whole range was searched
+        progress(elapsed());
+        if (g_json)
+            printf("{\"event\":\"exhausted\",\"ops\":%llu,\"elapsed\":%.2f}\n", (unsigned long long)g_ops.load(), elapsed());
+        else
+            printf("\nrange exhausted: the key is not in %s .. %s (%llu keys checked)\n", hex_u128(start).c_str(),
+                   hex_u128(end).c_str(), (unsigned long long)g_ops.load());
+        fflush(stdout);
+        return 4;
     }
     if (g_json) printf("{\"event\":\"stopped\",\"ops\":%llu,\"elapsed\":%.2f}\n", (unsigned long long)g_ops.load(), elapsed());
     else printf("\nstopped\n");
