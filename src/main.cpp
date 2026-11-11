@@ -611,7 +611,7 @@ static int run_brute(const std::string &address, const std::string &hash160hex, 
                      bool uncompressed, bool both) {
     u128 start, end;
     if (bits) {
-        if (bits < 2 || bits > 80) die("--bits must be between 2 and 80 for brute force");
+        if (bits < 1 || bits > 80) die("--bits must be between 1 and 80 for brute force");
         start = (u128)1 << (bits - 1);
         end = ((u128)1 << bits) - 1;
     } else {
@@ -794,7 +794,7 @@ int main(int argc, char **argv) {
     // ---- problem setup
     u128 end;
     if (bits) {
-        if (bits < 2 || bits > 125) die("--bits must be between 2 and 125");
+        if (bits < 1 || bits > 125) die("--bits must be between 1 and 125");
         g_start = (u128)1 << (bits - 1);
         end = ((u128)1 << bits) - 1;
     } else {
@@ -866,6 +866,16 @@ int main(int argc, char **argv) {
     // trivial cases that the random walks cannot handle
     Pt startG = mulG(g_start);
     if (pt_eq(startG, g_Q)) return report_found(g_start, 0);
+    // Tiny ranges are scanned directly: with only a handful of points the walks
+    // degenerate (a kangaroo sitting on its own jump point never moves again).
+    if (g_width <= 4096) {
+        Pt p = startG;
+        for (u64 i = 1; i < (u64)g_width; i++) {
+            p = pt_add(p, G);
+            if (pt_eq(p, g_Q)) return report_found(g_start + i, i);
+        }
+        die("the public key does not belong to any private key in this range");
+    }
     g_Qs = pt_add(g_Q, pt_neg(startG));
 
     Rng rng{seed};

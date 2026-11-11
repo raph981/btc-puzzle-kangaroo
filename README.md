@@ -86,6 +86,11 @@ the driver-JIT'd code from the same source is correct and equally fast.
 custom public key and range, choose CPU or GPU, and watch speed, progress against the expected
 work, distinguished points and the result. It listens on localhost only.
 
+The target list holds all 160 puzzles in a scrollable grid. A green dot marks the ones that are
+still unsolved. A puzzle is greyed out when the selected method cannot run it: the kangaroo
+needs a public key, which is known for puzzles 1–70 and every fifth one above (75, 80, … 160),
+and is limited to 125 bits; the address-only search is limited to puzzle 56.
+
 ## How it works
 
 * The target `Q = k·G` is shifted so the unknown `k'` lies in `[0, W)`.
@@ -116,5 +121,5 @@ can take anything from about half to a few times the average – the search is p
 | `src/gpu_cuda.cu`, `src/gpu.h` | CUDA backend |
 | `src/hash.h` | SHA-256, RIPEMD-160, Base58Check (address derivation) |
 | `server.py`, `web/index.html` | web interface |
-| `puzzles.json` | addresses and public keys of some solved puzzles (no private keys) |
+| `puzzles.json` | address, public key (where revealed on-chain) and solved flag of all 160 puzzles (no private keys) |
 | `tests/test_solver.py` | end-to-end tests |

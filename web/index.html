@@ -33,10 +33,23 @@
   @media (max-width: 880px) { .grid { grid-template-columns: 1fr; } }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 16px; }
   .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
-  .chips { display: flex; flex-wrap: wrap; gap: 7px; }
-  .chip { font: 600 13px var(--mono); padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line);
-          background: var(--panel2); color: var(--text); cursor: pointer; }
+  .chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(54px, 1fr)); gap: 6px;
+           max-height: 214px; overflow-y: scroll; padding: 2px 8px 2px 2px;
+           scrollbar-width: auto; scrollbar-color: var(--muted) var(--bg); }
+  .chips::-webkit-scrollbar { width: 12px; }
+  .chips::-webkit-scrollbar-track { background: var(--bg); border-radius: 6px; }
+  .chips::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 6px; border: 2px solid var(--bg); }
+  .chips::-webkit-scrollbar-thumb:hover { background: var(--text); }
+  .chip { font: 600 13px var(--mono); padding: 6px 4px; border-radius: 8px; border: 1px solid var(--line);
+          background: var(--panel2); color: var(--text); cursor: pointer; position: relative; }
   .chip:hover { border-color: var(--muted); }
+  .chip:disabled { opacity: .38; cursor: not-allowed; }
+  .chip:disabled:hover { border-color: var(--line); }
+  .chip.open::after { content: ""; position: absolute; top: 3px; right: 3px; width: 5px; height: 5px;
+          border-radius: 50%; background: var(--good); }
+  .chip.wide { padding: 6px 12px; margin-top: 10px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin: 10px 0 0; }
+  .legend i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--good); margin-right: 5px; vertical-align: 1px; }
   .chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; margin: 14px 0 0; font-size: 13px; }
   dt { color: var(--muted); } dd { margin: 0; font-family: var(--mono); overflow-wrap: anywhere; }
@@ -103,8 +116,11 @@
 
       <div class="card">
         <h2>Target</h2>
-        <div class="chips" id="chips"></div>
+        <div class="chips" id="chips" role="listbox" aria-label="Puzzle number" tabindex="-1"></div>
+        <p class="legend"><span><i></i>unsolved</span><span id="legend-count"></span></p>
+        <button class="chip wide" id="chip-custom" data-k="custom">custom range</button>
         <dl id="target">
+          <dt>Puzzle</dt><dd id="t-status">–</dd>
           <dt>Address</dt><dd id="t-addr">–</dd>
           <dt>Public key</dt><dd id="t-pub">–</dd>
           <dt>Key range</dt><dd id="t-range">–</dd>
@@ -193,6 +209,7 @@
 const $ = id => document.getElementById(id);
 let cfg = null, sel = null, backend = 'cpu', method = 'kangaroo', state = {status: 'idle'}, busy = false;
 const BRUTE_MAX = 56;   // puzzles above this are not feasible to brute force
+const KANG_MAX = 125;   // range limit of the solver (and far beyond any hardware anyway)
 
 const si = (n, d = 2) => {
   if (n == null || !isFinite(n)) return '–';
@@ -224,25 +241,44 @@ function renderMethod() {
   $('tile-threads').hidden = !brute;
   $('s-ops-l').textContent = brute ? 'Keys tried' : 'Jumps done';
   $('s-rate2').textContent = unit() + ' per second';
-  // some chips are infeasible for brute
+  // brute force is only feasible for low puzzles; the kangaroo needs a public key
+  let usable = 0;
   for (const c of $('chips').children) {
-    const b = c.dataset.k === 'custom' ? 0 : +c.dataset.k;
-    c.disabled = brute && b > BRUTE_MAX;
+    const p = puzzle(+c.dataset.k);
+    c.disabled = brute ? p.bits > BRUTE_MAX : !p.pubkey || p.bits > KANG_MAX;
+    c.title = c.disabled ? (brute ? 'Too large to brute force (limit: #' + BRUTE_MAX + ')'
+                                  : !p.pubkey ? 'Public key never revealed on-chain: address-only search needed'
+                                  : 'Beyond the solver limit of ' + KANG_MAX + ' bits')
+                         : (p.solved ? 'Solved' : 'Unsolved') + (p.pubkey ? ', public key known' : ', address only');
+    if (!c.disabled) usable++;
   }
-  if (brute && sel !== 'custom' && sel > BRUTE_MAX) { sel = 40; }
+  $('legend-count').textContent = usable + ' of ' + cfg.puzzles.length + ' puzzles usable with this method';
+  if (sel !== 'custom' && (brute ? sel > BRUTE_MAX : !puzzle(sel).pubkey || sel > KANG_MAX)) sel = 40;
   renderTarget();
+  showSelected();
+}
+
+const puzzle = bits => cfg.puzzles.find(p => p.bits === bits);
+function showSelected() {   // scroll the list (not the page) to the selected puzzle
+  const c = $('chips').querySelector('.chip.on');
+  if (c) $('chips').scrollTop = c.offsetTop - $('chips').offsetTop - $('chips').clientHeight / 2 + c.offsetHeight / 2;
 }
 
 function renderTarget() {
-  for (const c of $('chips').children) c.classList.toggle('on', c.dataset.k === String(sel));
+  for (const c of $('chips').children) {
+    c.classList.toggle('on', c.dataset.k === String(sel));
+    c.setAttribute('aria-selected', c.dataset.k === String(sel));
+  }
+  $('chip-custom').classList.toggle('on', sel === 'custom');
   const custom = sel === 'custom', brute = method === 'brute';
   $('custom').hidden = !custom; $('target').hidden = custom;
   $('c-pub-row').hidden = brute;
   $('c-addr-label').textContent = brute ? 'Target address (required)' : 'Expected address (optional, used to verify the result)';
   if (custom) return;
-  const p = cfg.puzzles.find(p => p.bits === sel);
+  const p = puzzle(sel);
+  $('t-status').textContent = '#' + p.bits + ' · ' + (p.solved ? 'solved' : 'unsolved');
   $('t-addr').textContent = p.address;
-  $('t-pub').textContent = brute ? '(unused in this mode)' : p.pubkey;
+  $('t-pub').textContent = brute ? (p.pubkey ? '(unused in this mode)' : '(never revealed on-chain)') : p.pubkey;
   $('t-range').textContent = `2^${p.bits - 1} … 2^${p.bits} − 1`;
   $('t-work').textContent = brute
     ? `≈ ${si(expectedFor(p.bits))} keys (2^${p.bits - 1}, half the range)`
@@ -259,14 +295,12 @@ async function init() {
   cfg = await (await fetch('/api/config')).json();
   for (const p of cfg.puzzles) {
     const b = document.createElement('button');
-    b.className = 'chip'; b.textContent = '#' + p.bits; b.dataset.k = p.bits;
+    b.className = 'chip' + (p.solved ? '' : ' open'); b.textContent = p.bits; b.dataset.k = p.bits;
+    b.setAttribute('role', 'option');
     b.onclick = () => { sel = p.bits; renderTarget(); };
     $('chips').append(b);
   }
-  const c = document.createElement('button');
-  c.className = 'chip'; c.textContent = 'custom'; c.dataset.k = 'custom';
-  c.onclick = () => { sel = 'custom'; renderTarget(); };
-  $('chips').append(c);
+  $('chip-custom').onclick = () => { sel = 'custom'; renderTarget(); };
   sel = 40; renderTarget();
 
   const info = cfg.info, n = info.threads || 1;

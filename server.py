@@ -57,7 +57,12 @@ class Job:
             p = next((p for p in PUZZLES if p["bits"] == req["puzzle"]), None)
             if not p:
                 raise ValueError("unknown puzzle")
-            target.update(label="Puzzle #%d" % p["bits"], pubkey=p["pubkey"], address=p["address"], bits=p["bits"])
+            if not brute and p["bits"] > 125:
+                raise ValueError("puzzle #%d is beyond the solver's 125-bit range limit" % p["bits"])
+            if not brute and not p.get("pubkey"):
+                raise ValueError("the public key of puzzle #%d has never been revealed on-chain - "
+                                 "only the address-only search is possible" % p["bits"])
+            target.update(label="Puzzle #%d" % p["bits"], pubkey=p.get("pubkey"), address=p["address"], bits=p["bits"])
         else:
             c = req.get("custom") or {}
             target["label"] = "Custom range"
